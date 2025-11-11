@@ -1,0 +1,64 @@
+{
+  "_comment": "Code-God Configuration File",
+  "_location": "Copy this to ~/.codegod/config.json",
+
+  "model": "auto",
+  "prefer_local": true,
+  "max_history": 10,
+  "mcp_servers_dir": "~/.codegod/mcp_servers",
+
+  "_examples": {
+    "_comment": "Example configurations for different use cases",
+
+    "small_model_testing": {
+      "model": "qwen2.5:1.5b",
+      "prefer_local": true,
+      "max_history": 5,
+      "description": "Fastest, lowest resource usage (1-2GB RAM)"
+    },
+
+    "medium_quality": {
+      "model": "llama3.1:8b",
+      "prefer_local": true,
+      "max_history": 10,
+      "description": "Balanced quality and speed (8GB RAM)"
+    },
+
+    "best_quality_local": {
+      "model": "llama3.1:70b",
+      "prefer_local": true,
+      "max_history": 10,
+      "description": "Best local quality (48GB+ RAM recommended)"
+    },
+
+    "api_mode": {
+      "model": "claude-sonnet-4.5",
+      "prefer_local": false,
+      "max_history": 20,
+      "description": "Use API (requires ANTHROPIC_API_KEY in .env)"
+    }
+  },
+
+  "_available_small_models": [
+    "qwen2.5:1.5b - Qwen 2.5 1.5B (fastest)",
+    "qwen2.5:3b - Qwen 2.5 3B",
+    "llama3.2:1b - Llama 3.2 1B",
+    "llama3.2:3b - Llama 3.2 3B",
+    "phi3:mini - Microsoft Phi-3 Mini 3.8B",
+    "gemma2:2b - Google Gemma 2 2B"
+  ],
+
+  "_available_medium_models": [
+    "llama3.1:8b - Llama 3.1 8B",
+    "mistral:7b - Mistral 7B",
+    "qwen2.5:7b - Qwen 2.5 7B",
+    "deepseek-coder:6.7b - DeepSeek Coder (code-focused)"
+  ],
+
+  "_available_large_models": [
+    "llama3.1:70b - Llama 3.1 70B (recommended)",
+    "qwen2.5:72b - Qwen 2.5 72B",
+    "mixtral:8x7b - Mixtral 8x7B",
+    "llama3.1:405b - Llama 3.1 405B (extreme)"
+  ]
+}

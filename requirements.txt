@@ -1,0 +1,20 @@
+# Code-God Terminal Application Requirements
+
+# Rich for beautiful terminal UI
+rich>=13.7.0
+
+# Async HTTP client
+aiohttp>=3.9.0
+
+# Local model execution
+ollama>=0.1.6
+
+# Optional: API model support
+anthropic>=0.25.0
+openai>=1.12.0
+
+# Logging
+structlog>=24.1.0
+
+# Utilities
+python-dotenv>=1.0.0

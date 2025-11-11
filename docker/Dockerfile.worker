@@ -1,0 +1,57 @@
+# Dockerfile for Worker Agents
+FROM python:3.11-slim
+
+LABEL maintainer="Code-God Project"
+LABEL description="Worker Agent for autonomous code generation"
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies and development tools
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    nodejs \
+    npm \
+    golang-go \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install testing frameworks
+RUN pip install --no-cache-dir pytest mypy pylint black && \
+    npm install -g jest eslint typescript @typescript-eslint/parser @typescript-eslint/eslint-plugin
+
+# Copy requirements
+COPY requirements/worker-requirements.txt /app/requirements.txt
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Install Ollama for local model execution
+RUN curl -fsSL https://ollama.com/install.sh | sh
+
+# Copy worker code
+COPY worker_agent.py /app/
+COPY prompt_templates.py /app/
+COPY mcp_integration.py /app/
+COPY validation_system.py /app/
+
+# Create sandbox directory
+RUN mkdir -p /app/sandbox /app/models
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV SANDBOX_ROOT=/app/sandbox
+
+# Expose port for health check
+EXPOSE 8002
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Run the worker agent
+CMD ["python", "worker_agent.py"]
