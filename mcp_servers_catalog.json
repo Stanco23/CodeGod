@@ -9,7 +9,9 @@
       "language": "typescript",
       "tools": ["read_file", "read_multiple_files", "write_file", "create_directory", "list_directory", "move_file", "search_files", "get_file_info"],
       "install_cmd": "npm install && npm run build",
-      "run_cmd": "node dist/index.js"
+      "run_cmd": "node dist/index.js",
+      "requires_args": true,
+      "args_note": "Requires allowed directory paths as command-line arguments"
     },
     {
       "name": "git",
@@ -28,22 +30,22 @@
       "path": "",
       "description": "GitHub's official MCP Server - repository management, issues, PRs, workflows",
       "category": "development",
-      "language": "typescript",
+      "language": "go",
       "tools": ["create_or_update_file", "search_repositories", "create_repository", "get_file_contents", "push_files", "create_issue", "create_pull_request", "fork_repository", "search_code"],
-      "install_cmd": "npm install && npm run build",
-      "run_cmd": "node dist/index.js",
+      "install_cmd": "go build -o mcp-server ./cmd/mcp-server || go build -o mcp-server .",
+      "run_cmd": "./mcp-server",
       "env_vars": {"GITHUB_PERSONAL_ACCESS_TOKEN": ""}
     },
     {
       "name": "postgres",
-      "repo": "https://github.com/modelcontextprotocol/servers.git",
-      "path": "src/postgres",
+      "repo": "https://github.com/pyroprompts/postgres-mcp-server.git",
+      "path": "",
       "description": "PostgreSQL database operations - query, execute, schema management",
       "category": "database",
-      "language": "typescript",
+      "language": "python",
       "tools": ["query", "execute", "list_tables", "describe_table", "create_table", "insert_data"],
-      "install_cmd": "npm install && npm run build",
-      "run_cmd": "node dist/index.js",
+      "install_cmd": null,
+      "run_cmd": "python -m postgres_mcp_server",
       "env_vars": {"POSTGRES_CONNECTION_STRING": ""}
     },
     {
@@ -52,10 +54,10 @@
       "path": "src/fetch",
       "description": "Web content fetching and scraping - retrieve HTML, JSON, text from URLs",
       "category": "web",
-      "language": "typescript",
+      "language": "python",
       "tools": ["fetch", "fetch_html", "fetch_json", "fetch_text"],
-      "install_cmd": "npm install && npm run build",
-      "run_cmd": "node dist/index.js"
+      "install_cmd": "pip install -e .",
+      "run_cmd": "python -m mcp_server_fetch"
     },
     {
       "name": "sqlite",

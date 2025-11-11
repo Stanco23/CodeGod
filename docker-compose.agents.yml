@@ -1,0 +1,160 @@
+version: '3.8'
+
+services:
+  # vLLM inference server for fast local model inference
+  vllm-server:
+    image: vllm/vllm-openai:latest
+    container_name: codegod-vllm
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/root/.cache/huggingface
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+    command: >
+      --model meta-llama/Meta-Llama-3.1-8B-Instruct
+      --dtype float16
+      --max-model-len 8192
+      --gpu-memory-utilization 0.85
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    networks:
+      - agent-network
+
+  # Master Orchestrator
+  master-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: codegod-master
+    environment:
+      - AGENT_ROLE=master
+      - VLLM_API_URL=http://vllm-server:8000/v1
+      - VLLM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./projects:/app/projects
+      - ./logs:/app/logs
+      - ~/.codegod:/root/.codegod
+    depends_on:
+      - vllm-server
+      - redis
+    networks:
+      - agent-network
+
+  # Backend Agent Worker
+  backend-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: codegod-backend
+    environment:
+      - AGENT_ROLE=backend
+      - VLLM_API_URL=http://vllm-server:8000/v1
+      - VLLM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./projects:/app/projects
+      - ./logs:/app/logs
+    depends_on:
+      - vllm-server
+      - redis
+    networks:
+      - agent-network
+
+  # Frontend Agent Worker
+  frontend-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: codegod-frontend
+    environment:
+      - AGENT_ROLE=frontend
+      - VLLM_API_URL=http://vllm-server:8000/v1
+      - VLLM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./projects:/app/projects
+      - ./logs:/app/logs
+    depends_on:
+      - vllm-server
+      - redis
+    networks:
+      - agent-network
+
+  # DevOps Agent Worker
+  devops-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: codegod-devops
+    environment:
+      - AGENT_ROLE=devops
+      - VLLM_API_URL=http://vllm-server:8000/v1
+      - VLLM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./projects:/app/projects
+      - ./logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock  # For Docker operations
+    depends_on:
+      - vllm-server
+      - redis
+    networks:
+      - agent-network
+
+  # Testing Agent Worker
+  testing-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: codegod-testing
+    environment:
+      - AGENT_ROLE=testing
+      - VLLM_API_URL=http://vllm-server:8000/v1
+      - VLLM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./projects:/app/projects
+      - ./logs:/app/logs
+    depends_on:
+      - vllm-server
+      - redis
+    networks:
+      - agent-network
+
+  # Redis for task queue and agent communication
+  redis:
+    image: redis:7-alpine
+    container_name: codegod-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - agent-network
+
+  # Redis Commander for monitoring
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: codegod-redis-ui
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - agent-network
+
+volumes:
+  redis-data:
+
+networks:
+  agent-network:
+    driver: bridge

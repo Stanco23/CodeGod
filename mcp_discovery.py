@@ -115,31 +115,31 @@ class MCPDiscovery:
             },
             {
                 "name": "github",
-                "repo": "https://github.com/modelcontextprotocol/servers.git",
-                "path": "src/github",
-                "description": "GitHub API operations",
+                "repo": "https://github.com/github/github-mcp-server.git",
+                "path": "",
+                "description": "GitHub's official MCP Server - repository management, issues, PRs, workflows",
                 "tools": [
                     "create_or_update_file", "search_repositories",
                     "create_repository", "get_file_contents", "push_files",
-                    "create_issue", "create_pull_request", "fork_repository"
+                    "create_issue", "create_pull_request", "fork_repository", "search_code"
                 ],
-                "install_cmd": "npm install && npm run build",
-                "run_cmd": "node dist/index.js",
-                "language": "typescript",
+                "install_cmd": "go build -o mcp-server ./cmd/mcp-server || go build -o mcp-server .",
+                "run_cmd": "./mcp-server",
+                "language": "go",
                 "env_vars": {"GITHUB_PERSONAL_ACCESS_TOKEN": ""}
             },
             {
                 "name": "postgres",
-                "repo": "https://github.com/modelcontextprotocol/servers.git",
-                "path": "src/postgres",
+                "repo": "https://github.com/pyroprompts/postgres-mcp-server.git",
+                "path": "",
                 "description": "PostgreSQL database operations",
                 "tools": [
                     "query", "execute", "list_tables",
                     "describe_table", "create_table", "insert_data"
                 ],
-                "install_cmd": "npm install && npm run build",
-                "run_cmd": "node dist/index.js",
-                "language": "typescript",
+                "install_cmd": None,
+                "run_cmd": "python -m postgres_mcp_server",
+                "language": "python",
                 "env_vars": {"POSTGRES_CONNECTION_STRING": ""}
             },
             {
@@ -148,9 +148,9 @@ class MCPDiscovery:
                 "path": "src/fetch",
                 "description": "Web fetching and scraping",
                 "tools": ["fetch", "fetch_html", "fetch_json", "fetch_text"],
-                "install_cmd": "npm install && npm run build",
-                "run_cmd": "node dist/index.js",
-                "language": "typescript"
+                "install_cmd": "pip install -e .",
+                "run_cmd": "python -m mcp_server_fetch",
+                "language": "python"
             },
             {
                 "name": "sqlite",
@@ -208,6 +208,98 @@ class MCPDiscovery:
             else:
                 server_spec["installed"] = False
 
+    def _fix_monorepo_tsconfig(self, server_dst: Path, server_src: Path) -> bool:
+        """
+        Fix tsconfig.json that extends parent configs (for monorepo servers)
+
+        Args:
+            server_dst: Path to installed server directory
+            server_src: Path to server source in cloned repository
+
+        Returns:
+            True if fixed/no fix needed, False if failed
+        """
+        tsconfig_path = server_dst / "tsconfig.json"
+
+        if not tsconfig_path.exists():
+            return True  # No tsconfig, nothing to fix
+
+        try:
+            with open(tsconfig_path, 'r') as f:
+                tsconfig = json.load(f)
+
+            # Check if it extends a parent config
+            if "extends" in tsconfig:
+                extends_path = tsconfig["extends"]
+                logger.info(f"tsconfig.json extends: {extends_path}")
+
+                # Resolve the parent config relative to the source location
+                # extends_path is relative to server_src (e.g., "../../tsconfig.json")
+                # Resolve it from the server's source location in the repo
+                parent_tsconfig_path = (server_src / extends_path).resolve()
+
+                if parent_tsconfig_path.exists():
+                    logger.info(f"Found parent tsconfig at: {parent_tsconfig_path}")
+
+                    # Load parent config
+                    with open(parent_tsconfig_path, 'r') as f:
+                        parent_config = json.load(f)
+
+                    # Merge parent config into local config
+                    # Parent compilerOptions as base, override with local
+                    if "compilerOptions" in parent_config:
+                        merged_options = parent_config.get("compilerOptions", {}).copy()
+                        merged_options.update(tsconfig.get("compilerOptions", {}))
+                        tsconfig["compilerOptions"] = merged_options
+
+                    # Remove the extends key
+                    del tsconfig["extends"]
+
+                    # Write back the fixed config
+                    with open(tsconfig_path, 'w') as f:
+                        json.dump(tsconfig, f, indent=2)
+
+                    logger.info("Fixed tsconfig.json by inlining parent configuration")
+                    return True
+                else:
+                    logger.warning(f"Parent tsconfig not found at {parent_tsconfig_path}")
+
+                    # Use default TypeScript config as fallback
+                    default_config = {
+                        "compilerOptions": {
+                            "target": "ES2022",
+                            "module": "Node16",
+                            "moduleResolution": "Node16",
+                            "strict": True,
+                            "esModuleInterop": True,
+                            "skipLibCheck": True,
+                            "forceConsistentCasingInFileNames": True,
+                            "resolveJsonModule": True,
+                            "outDir": "./dist",
+                            "rootDir": "."
+                        },
+                        "include": ["./**/*.ts"],
+                        "exclude": ["node_modules"]
+                    }
+
+                    # Merge with existing config
+                    merged = default_config.copy()
+                    merged.update(tsconfig)
+                    if "extends" in merged:
+                        del merged["extends"]
+
+                    with open(tsconfig_path, 'w') as f:
+                        json.dump(merged, f, indent=2)
+
+                    logger.info("Fixed tsconfig.json with default configuration")
+                    return True
+
+        except Exception as e:
+            logger.warning(f"Failed to fix tsconfig.json: {e}")
+            return False
+
+        return True
+
     def _detect_and_get_install_cmd(self, server_path: Path, server_spec: Dict) -> str:
         """
         Auto-detect project type and return appropriate install command
@@ -217,10 +309,31 @@ class MCPDiscovery:
             server_spec: Server specification
 
         Returns:
-            Install command string
+            Install command string or None if no installation needed
         """
+        # Check for Go project
+        if (server_path / "go.mod").exists():
+            logger.info(f"Detected Go project (go.mod)")
+            # Check if go is installed
+            try:
+                result = subprocess.run(
+                    ["go", "version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    logger.info(f"Go version: {result.stdout.strip()}")
+                    return "go build -o mcp-server ./cmd/... || go build -o mcp-server ."
+                else:
+                    logger.error("Go is installed but 'go version' failed")
+                    return None
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                logger.error("Go is required but not installed. Install from https://go.dev/")
+                return None
+
         # Check for Python project
-        if (server_path / "pyproject.toml").exists():
+        elif (server_path / "pyproject.toml").exists():
             logger.info(f"Detected Python project (pyproject.toml)")
             # Try uv first (faster), fall back to pip
             if subprocess.run(["which", "uv"], capture_output=True).returncode == 0:
@@ -238,14 +351,14 @@ class MCPDiscovery:
             logger.info(f"Detected Python project (requirements.txt)")
             return "pip install -r requirements.txt"
 
-        # Fall back to spec's install_cmd if provided
+        # Fall back to spec's install_cmd if provided and the project type matches
         elif server_spec.get("install_cmd"):
-            logger.info(f"Using spec install command")
+            logger.warning(f"Using spec install command (may be incorrect if catalog metadata is wrong)")
             return server_spec.get("install_cmd")
 
         # No installation needed
         else:
-            logger.info(f"No installation command detected")
+            logger.info(f"No installation command detected - server may be pre-built or script-based")
             return None
 
     async def install_server(self, server_name: str) -> bool:
@@ -363,6 +476,9 @@ class MCPDiscovery:
             logger.info(f"Copying server files from {server_src} to {server_dst}")
             shutil.copytree(server_src, server_dst, symlinks=True)
 
+            # Fix monorepo tsconfig.json if needed (for TypeScript projects)
+            self._fix_monorepo_tsconfig(server_dst, server_src)
+
             # Auto-detect project type and install dependencies
             install_cmd = self._detect_and_get_install_cmd(server_dst, server_spec)
 
@@ -380,6 +496,31 @@ class MCPDiscovery:
 
                     if result.returncode != 0:
                         logger.error(f"Installation failed with exit code {result.returncode}")
+                        logger.error(f"Command: {install_cmd}")
+                        logger.error(f"Working directory: {server_dst}")
+
+                        # Provide specific diagnostics for common failures
+                        if "npm" in install_cmd and "package.json" in result.stderr:
+                            logger.error("NPM Error: package.json not found or invalid")
+                            logger.error("This usually means the catalog metadata is incorrect for this server")
+                            logger.error("Checking project structure...")
+
+                            # List files to help diagnose
+                            try:
+                                files = list(server_dst.glob("*"))
+                                logger.error(f"Files in directory: {[f.name for f in files[:10]]}")
+
+                                # Check what kind of project this actually is
+                                if (server_dst / "go.mod").exists():
+                                    logger.error("This appears to be a Go project, not Node.js!")
+                                    logger.error("Install Go and retry: https://go.dev/")
+                                elif (server_dst / "pyproject.toml").exists():
+                                    logger.error("This appears to be a Python project, not Node.js!")
+                                elif (server_dst / "requirements.txt").exists():
+                                    logger.error("This appears to be a Python project, not Node.js!")
+                            except Exception:
+                                pass
+
                         logger.error(f"STDOUT: {result.stdout}")
                         logger.error(f"STDERR: {result.stderr}")
                         return False
@@ -406,13 +547,14 @@ class MCPDiscovery:
             logger.error(f"Failed to install '{server_name}': {e}", exc_info=True)
             return False
 
-    async def start_server(self, server_name: str, config: Dict = None) -> bool:
+    async def start_server(self, server_name: str, config: Dict = None, allowed_dirs: list = None) -> bool:
         """
         Start an MCP server
 
         Args:
             server_name: Name of server
             config: Configuration including env vars
+            allowed_dirs: List of allowed directories (for filesystem server)
 
         Returns:
             True if started successfully
@@ -443,7 +585,22 @@ class MCPDiscovery:
             server_path = Path(server_spec["path_local"])
             run_cmd = server_spec.get("run_cmd", "node dist/index.js")
 
+            # Special handling for filesystem server - needs allowed directories
+            if server_name == "filesystem":
+                if not allowed_dirs:
+                    # Default to current working directory and common project paths
+                    allowed_dirs = [
+                        os.getcwd(),  # Current working directory
+                        str(Path.home()),  # User home directory
+                    ]
+
+                # Append allowed directories to the run command
+                dirs_str = " ".join(f'"{d}"' for d in allowed_dirs)
+                run_cmd = f"{run_cmd} {dirs_str}"
+                logger.info(f"Filesystem server allowed directories: {allowed_dirs}")
+
             logger.info(f"Starting MCP server: {server_name}")
+            logger.info(f"Run command: {run_cmd}")
 
             process = subprocess.Popen(
                 run_cmd,

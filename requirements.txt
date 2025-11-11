@@ -1,23 +1,11 @@
-# Code-God Terminal Application Requirements
-
-# Rich for beautiful terminal UI
-rich>=13.7.0
-
-# Prompt toolkit for better input with history
-prompt_toolkit>=3.0.43
-
-# Async HTTP client
-aiohttp>=3.9.0
-
-# Local model execution
-ollama>=0.1.6
-
-# Optional: API model support
-anthropic>=0.25.0
-openai>=1.12.0
-
-# Logging
-structlog>=24.1.0
-
-# Utilities
-python-dotenv>=1.0.0
+aiohttp==3.13.2
+anthropic==0.72.0
+chromadb==1.3.4
+fastapi==0.121.1
+openai==2.7.2
+prompt_toolkit==3.0.52
+pydantic==2.12.4
+redis==7.0.1
+rich==14.2.0
+sentence_transformers==5.1.2
+uvicorn==0.38.0

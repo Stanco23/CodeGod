@@ -45,10 +45,11 @@ class CodeGod:
     Interactive terminal interface for autonomous development
     """
 
-    def __init__(self, model_name: Optional[str] = None, prefer_local: bool = True):
+    def __init__(self, model_name: Optional[str] = None, prefer_local: bool = True, use_agents: bool = False):
         self.console = console
         self.model_name = model_name
         self.prefer_local = prefer_local
+        self.use_agents = use_agents
 
         # Initialize components
         self.model: Optional[LocalModelExecutor] = None
@@ -109,9 +110,11 @@ class CodeGod:
             task = progress.add_task("Initializing project builder...", total=None)
             self.project_builder = ProjectBuilder(
                 model=self.model,
-                mcp_discovery=self.mcp_discovery
+                mcp_discovery=self.mcp_discovery,
+                use_agents=self.use_agents
             )
-            progress.update(task, description="✓ Project builder ready")
+            mode = "multi-agent" if self.use_agents else "single-agent"
+            progress.update(task, description=f"✓ Project builder ready ({mode} mode)")
 
             # Initialize conversation manager
             self.conversation = ConversationManager(
@@ -642,13 +645,19 @@ async def main():
         help="Build a project and exit (non-interactive mode)",
         default=None
     )
+    parser.add_argument(
+        "--use-agents",
+        action="store_true",
+        help="Use multi-agent system for project building (requires Docker)"
+    )
 
     args = parser.parse_args()
 
     # Create and initialize app
     app = CodeGod(
         model_name=args.model,
-        prefer_local=not args.prefer_api
+        prefer_local=not args.prefer_api,
+        use_agents=args.use_agents
     )
 
     try:

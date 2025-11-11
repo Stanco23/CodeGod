@@ -1,0 +1,43 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (for frontend agents)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional agent dependencies
+RUN pip install --no-cache-dir \
+    redis \
+    celery \
+    openai  # For vLLM API compatibility
+
+# Copy agent code
+COPY multi_agent_system.py .
+COPY agent_worker.py .
+COPY local_model_executor.py .
+COPY error_knowledge_base.py .
+COPY knowledge_memory_system.py .
+COPY prompt_templates.py .
+
+# Create directories
+RUN mkdir -p /app/projects /app/logs /root/.codegod
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV AGENT_ROLE=worker
+
+# Run agent worker
+CMD ["python", "agent_worker.py"]
