@@ -16,18 +16,25 @@ import argparse
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Confirm
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.live import Live
 from rich.layout import Layout
 from rich import box
 
+# Prompt toolkit for input with history
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.styles import Style as PTStyle
+
 # Core components
 from local_model_executor import get_master_model, LocalModelExecutor
 from mcp_discovery import MCPDiscovery
 from project_builder import ProjectBuilder
 from conversation_manager import ConversationManager
+import subprocess
 
 console = Console()
 
@@ -48,6 +55,16 @@ class CodeGod:
         self.mcp_discovery: Optional[MCPDiscovery] = None
         self.project_builder: Optional[ProjectBuilder] = None
         self.conversation: Optional[ConversationManager] = None
+
+        # Initialize prompt session with history
+        history_file = Path.home() / ".codegod" / "history"
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+        self.session = PromptSession(
+            history=FileHistory(str(history_file)),
+            auto_suggest=AutoSuggestFromHistory(),
+        )
+
+        self.shell_mode = False  # Track if in shell mode
 
         # State
         self.current_project: Optional[str] = None
@@ -132,13 +149,29 @@ class CodeGod:
 
         while self.running:
             try:
-                # Get user input
-                user_input = Prompt.ask(
-                    "\n[bold cyan]You[/bold cyan]",
-                    default=""
-                ).strip()
+                # Determine prompt based on mode
+                if self.shell_mode:
+                    prompt_text = "\n$ "
+                else:
+                    prompt_text = "\nYou> "
+
+                # Get user input with history support
+                user_input = await asyncio.to_thread(
+                    self.session.prompt,
+                    prompt_text
+                )
+                user_input = user_input.strip()
 
                 if not user_input:
+                    continue
+
+                # Handle shell mode
+                if self.shell_mode:
+                    if user_input.lower() in ['exit', 'quit']:
+                        self.shell_mode = False
+                        self.console.print("[cyan]Exited shell mode. Back to AI mode.[/cyan]")
+                    else:
+                        self._execute_shell_command(user_input)
                     continue
 
                 # Handle commands
@@ -149,8 +182,15 @@ class CodeGod:
                     await self._handle_message(user_input)
 
             except KeyboardInterrupt:
+                if self.shell_mode:
+                    # In shell mode, Ctrl+C just cancels current line
+                    self.console.print()
+                    continue
                 if Confirm.ask("\n[yellow]Exit Code-God?[/yellow]"):
                     self.running = False
+            except EOFError:
+                # Ctrl+D exits
+                self.running = False
             except Exception as e:
                 self.console.print(f"[red]Error: {e}[/red]")
 
@@ -162,11 +202,13 @@ class CodeGod:
 [bold]Quick Start:[/bold]
 • Type naturally to chat with AI
 • Use [cyan]/build[/cyan] to start a new project
-• Use [cyan]/mcp[/cyan] to manage MCP servers
+• Use [cyan]/search <query>[/cyan] to find MCP tools
+• Use [cyan]/shell[/cyan] to run shell commands
+• Use [cyan]↑/↓ arrows[/cyan] to navigate command history
 • Use [cyan]/help[/cyan] for all commands
 
 [bold]Example:[/bold]
-  /build Create a REST API for todo management with FastAPI
+  /build Create a REST API --dir ~/my-projects
         """
         self.console.print(Panel(help_text, title="Welcome to Code-God", border_style="cyan"))
 
@@ -182,8 +224,11 @@ class CodeGod:
             '/mcp': self._cmd_mcp,
             '/servers': self._cmd_servers,
             '/install': self._cmd_install,
+            '/search': self._cmd_search,
+            '/categories': self._cmd_categories,
             '/list': self._cmd_list,
             '/status': self._cmd_status,
+            '/shell': self._cmd_shell,
             '/clear': self._cmd_clear,
             '/exit': self._cmd_exit,
             '/quit': self._cmd_exit,
@@ -228,14 +273,17 @@ class CodeGod:
         help_table.add_column("Description", style="white")
 
         commands = [
-            ("/build <prompt>", "Build a new project from natural language"),
-            ("/mcp", "Show available MCP servers"),
+            ("/build <prompt>", "Build a new project (use --dir to specify location)"),
+            ("/mcp", "Show all available MCP servers"),
+            ("/search <query>", "Search MCP servers by name, tool, or category"),
+            ("/categories", "Show MCP server categories"),
             ("/servers", "List installed MCP servers"),
             ("/install <server>", "Install an MCP server"),
             ("/list", "List recent projects"),
             ("/status", "Show current status and configuration"),
             ("/model", "Show current AI model information"),
             ("/config", "Show/edit configuration"),
+            ("/shell", "Enter shell mode (type 'exit' to return)"),
             ("/clear", "Clear the screen"),
             ("/exit or /quit", "Exit Code-God"),
         ]
@@ -248,16 +296,49 @@ class CodeGod:
     async def _cmd_build(self, args: str):
         """Build a new project"""
         if not args:
-            self.console.print("[yellow]Usage: /build <project description>[/yellow]")
+            self.console.print("[yellow]Usage: /build <project description> [--dir <directory>][/yellow]")
             self.console.print("[dim]Example: /build Create a REST API for managing tasks[/dim]")
+            self.console.print("[dim]Example: /build Create a REST API --dir ~/my-projects[/dim]")
+            return
+
+        # Parse directory flag
+        import shlex
+        try:
+            parts = shlex.split(args)
+        except ValueError:
+            # If shlex fails, just use simple split
+            parts = args.split()
+
+        output_dir = None
+        description_parts = []
+
+        i = 0
+        while i < len(parts):
+            if parts[i] == "--dir" and i + 1 < len(parts):
+                output_dir = parts[i + 1]
+                i += 2
+            else:
+                description_parts.append(parts[i])
+                i += 1
+
+        description = " ".join(description_parts)
+
+        if not description:
+            self.console.print("[yellow]Please provide a project description[/yellow]")
             return
 
         self.console.print()
-        self.console.print(f"[bold]Building project:[/bold] {args}")
+        self.console.print(f"[bold]Building project:[/bold] {description}")
+        if output_dir:
+            self.console.print(f"[bold]Output directory:[/bold] {output_dir}")
         self.console.print()
 
         try:
-            project_path = await self.project_builder.build_project(args, console=self.console)
+            project_path = await self.project_builder.build_project(
+                description,
+                console=self.console,
+                output_dir=output_dir
+            )
 
             self.console.print()
             self.console.print(Panel(
@@ -357,6 +438,71 @@ class CodeGod:
             except Exception as e:
                 self.console.print(f"[red]Error: {e}[/red]")
 
+    async def _cmd_search(self, args: str):
+        """Search MCP servers and tools"""
+        if not args:
+            self.console.print("[yellow]Usage: /search <query>[/yellow]")
+            self.console.print("[dim]Example: /search database[/dim]")
+            self.console.print("[dim]Example: /search git[/dim]")
+            return
+
+        results = self.mcp_discovery.search_servers(args)
+
+        if not results:
+            self.console.print(f"[yellow]No servers found matching '{args}'[/yellow]")
+            return
+
+        table = Table(title=f"Search Results for '{args}'", box=box.ROUNDED)
+        table.add_column("Name", style="cyan")
+        table.add_column("Category", style="magenta")
+        table.add_column("Description", style="white")
+        table.add_column("Tools", style="green")
+        table.add_column("Installed", style="yellow")
+
+        for server in results:
+            installed = "✓" if server.get("installed", False) else "✗"
+            tools_count = str(len(server.get("tools", [])))
+            category = server.get("category", "other")
+
+            table.add_row(
+                server["name"],
+                category,
+                server.get("description", "")[:60],
+                tools_count,
+                installed
+            )
+
+        self.console.print(table)
+        self.console.print(f"\n[dim]Found {len(results)} server(s)[/dim]")
+        self.console.print(f"[dim]Use [cyan]/install <name>[/cyan] to install a server[/dim]")
+
+    async def _cmd_categories(self, args: str):
+        """Show MCP server categories"""
+        categories = self.mcp_discovery.get_categories()
+
+        table = Table(title="MCP Server Categories", box=box.ROUNDED)
+        table.add_column("Category", style="cyan")
+        table.add_column("Servers", style="green")
+        table.add_column("Example Servers", style="white")
+
+        for category in categories:
+            servers = self.mcp_discovery.get_servers_by_category(category)
+            server_names = [s["name"] for s in servers[:3]]
+            example_text = ", ".join(server_names)
+            if len(servers) > 3:
+                example_text += f", +{len(servers) - 3} more"
+
+            table.add_row(
+                category,
+                str(len(servers)),
+                example_text
+            )
+
+        self.console.print(table)
+        self.console.print()
+        self.console.print(f"[dim]Total: {len(categories)} categories[/dim]")
+        self.console.print(f"[dim]Use [cyan]/search <category>[/cyan] to filter by category[/dim]")
+
     async def _cmd_list(self, args: str):
         """List recent projects"""
         projects_dir = Path.cwd() / "projects"
@@ -444,6 +590,36 @@ class CodeGod:
             self.console.print(config_table)
         else:
             self.console.print("[yellow]No configuration file found[/yellow]")
+
+    async def _cmd_shell(self, args: str):
+        """Enter shell mode"""
+        self.shell_mode = True
+        self.console.print("[cyan]Entered shell mode. Type shell commands directly.[/cyan]")
+        self.console.print("[dim]Type 'exit' or 'quit' to return to AI mode[/dim]")
+
+    def _execute_shell_command(self, command: str):
+        """Execute a shell command"""
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            if result.stdout:
+                self.console.print(result.stdout, end='')
+            if result.stderr:
+                self.console.print(f"[red]{result.stderr}[/red]", end='')
+
+            if result.returncode != 0:
+                self.console.print(f"[yellow]Exit code: {result.returncode}[/yellow]")
+
+        except subprocess.TimeoutExpired:
+            self.console.print("[red]Command timed out (5 minute limit)[/red]")
+        except Exception as e:
+            self.console.print(f"[red]Error executing command: {e}[/red]")
 
 
 async def main():

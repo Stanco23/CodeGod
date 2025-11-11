@@ -3,6 +3,9 @@
 # Rich for beautiful terminal UI
 rich>=13.7.0
 
+# Prompt toolkit for better input with history
+prompt_toolkit>=3.0.43
+
 # Async HTTP client
 aiohttp>=3.9.0
 

@@ -38,28 +38,52 @@ class MCPDiscovery:
 
     async def discover_servers(self):
         """Discover available MCP servers from 1mcpserver.com"""
+        # Try API first, but always fall back to defaults
+        api_success = False
+
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(self.api_url, timeout=10) as response:
+                async with session.get(self.api_url, timeout=5) as response:
                     if response.status == 200:
                         data = await response.json()
-                        self.available_servers = data.get("servers", [])
-                        logger.info(f"Discovered {len(self.available_servers)} MCP servers")
+                        servers = data.get("servers", [])
+                        if servers:
+                            self.available_servers = servers
+                            logger.info(f"Discovered {len(self.available_servers)} MCP servers from API")
+                            api_success = True
+                        else:
+                            logger.warning("API returned empty server list")
                     else:
-                        logger.warning(f"Failed to fetch servers: HTTP {response.status}")
-                        # Fallback to local cache or defaults
-                        self._load_default_servers()
+                        logger.warning(f"API returned HTTP {response.status}")
 
         except asyncio.TimeoutError:
-            logger.warning("Timeout fetching servers from 1mcpserver.com")
-            self._load_default_servers()
+            logger.warning("Timeout fetching servers from 1mcpserver.com (5s limit)")
+        except aiohttp.ClientError as e:
+            logger.warning(f"Network error fetching servers: {e}")
         except Exception as e:
-            logger.error(f"Error discovering servers: {e}")
+            logger.warning(f"Error discovering servers from API: {e}")
+
+        # Always load defaults if API failed or returned nothing
+        if not api_success:
+            logger.info("Using default MCP server list")
             self._load_default_servers()
 
     def _load_default_servers(self):
         """Load default MCP servers (fallback)"""
-        # These are the official MCP servers from modelcontextprotocol/servers
+        # Try to load from catalog JSON file first
+        catalog_path = Path(__file__).parent / "mcp_servers_catalog.json"
+
+        if catalog_path.exists():
+            try:
+                with open(catalog_path, 'r') as f:
+                    data = json.load(f)
+                    self.available_servers = data.get("servers", [])
+                    logger.info(f"Loaded {len(self.available_servers)} servers from catalog")
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to load catalog: {e}, using hardcoded defaults")
+
+        # Fallback to hardcoded list if catalog doesn't exist
         self.available_servers = [
             {
                 "name": "filesystem",
@@ -237,73 +261,149 @@ class MCPDiscovery:
         server_spec = next((s for s in self.available_servers if s["name"] == server_name), None)
 
         if not server_spec:
-            logger.error(f"Server {server_name} not found")
+            logger.error(f"Server '{server_name}' not found in available servers")
             return False
 
         if server_spec.get("installed"):
-            logger.info(f"Server {server_name} already installed")
+            logger.info(f"Server '{server_name}' is already installed")
             return True
 
         try:
             logger.info(f"Installing MCP server: {server_name}")
 
+            # Check prerequisites
+            if server_spec.get("language") == "typescript":
+                try:
+                    result = subprocess.run(
+                        ["node", "--version"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode != 0:
+                        raise FileNotFoundError
+                    logger.info(f"Node.js version: {result.stdout.strip()}")
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    logger.error("Node.js is required but not installed. Install from https://nodejs.org/")
+                    return False
+
+            # Check git is available
+            try:
+                subprocess.run(
+                    ["git", "--version"],
+                    capture_output=True,
+                    timeout=5,
+                    check=True
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                logger.error("Git is required but not installed")
+                return False
+
             # Clone repo if needed
             repo_url = server_spec["repo"]
-            repo_dir = self.servers_dir / "repos" / repo_url.split("/")[-1].replace(".git", "")
+            repo_name = repo_url.split("/")[-1].replace(".git", "")
+            repo_dir = self.servers_dir / "repos" / repo_name
 
             if not repo_dir.exists():
                 logger.info(f"Cloning repository: {repo_url}")
-                subprocess.run(
-                    ["git", "clone", repo_url, str(repo_dir)],
-                    check=True,
-                    capture_output=True
-                )
+                try:
+                    result = subprocess.run(
+                        ["git", "clone", "--depth", "1", repo_url, str(repo_dir)],
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+                    if result.returncode != 0:
+                        logger.error(f"Git clone failed: {result.stderr}")
+                        return False
+                    logger.info("Repository cloned successfully")
+                except subprocess.TimeoutExpired:
+                    logger.error("Git clone timed out after 60 seconds")
+                    return False
+            else:
+                logger.info(f"Repository already exists at {repo_dir}")
 
-            # Copy/link server to servers directory
+            # Find server source with multiple fallback paths
             server_src = repo_dir / server_spec.get("path", server_name)
-            server_dst = self.servers_dir / server_name
 
             if not server_src.exists():
-                logger.error(f"Server source not found: {server_src}")
-                return False
+                # Try alternative paths
+                alt_paths = [
+                    repo_dir / server_name,
+                    repo_dir / f"src/{server_name}",
+                    repo_dir / f"servers/{server_name}",
+                    repo_dir,  # Might be at root
+                ]
+
+                logger.warning(f"Primary path not found: {server_src}")
+                logger.info(f"Trying alternative paths...")
+
+                found = False
+                for alt_path in alt_paths:
+                    logger.info(f"  Checking: {alt_path}")
+                    if alt_path.exists():
+                        server_src = alt_path
+                        logger.info(f"  Found server at: {alt_path}")
+                        found = True
+                        break
+
+                if not found:
+                    logger.error(f"Server source not found in repository")
+                    logger.error(f"Tried paths: {server_src}, {alt_paths}")
+                    return False
 
             # Copy server files
             import shutil
+            server_dst = self.servers_dir / server_name
+
             if server_dst.exists():
+                logger.info(f"Removing existing installation at {server_dst}")
                 shutil.rmtree(server_dst)
-            shutil.copytree(server_src, server_dst)
+
+            logger.info(f"Copying server files from {server_src} to {server_dst}")
+            shutil.copytree(server_src, server_dst, symlinks=True)
 
             # Auto-detect project type and install dependencies
             install_cmd = self._detect_and_get_install_cmd(server_dst, server_spec)
 
             if install_cmd:
-                logger.info(f"Installing dependencies: {install_cmd}")
-                result = subprocess.run(
-                    install_cmd,
-                    shell=True,
-                    cwd=server_dst,
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
+                logger.info(f"Installing dependencies with: {install_cmd}")
+                try:
+                    result = subprocess.run(
+                        install_cmd,
+                        shell=True,
+                        cwd=server_dst,
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
 
-                if result.returncode != 0:
-                    logger.error(f"Installation failed: {result.stderr}")
+                    if result.returncode != 0:
+                        logger.error(f"Installation failed with exit code {result.returncode}")
+                        logger.error(f"STDOUT: {result.stdout}")
+                        logger.error(f"STDERR: {result.stderr}")
+                        return False
+
+                    logger.info(f"Dependencies installed successfully")
+                    if result.stdout:
+                        logger.debug(f"Build output: {result.stdout}")
+
+                except subprocess.TimeoutExpired:
+                    logger.error("Installation timed out after 300 seconds")
                     return False
+            else:
+                logger.info("No installation command needed")
 
             # Mark as installed
             server_spec["installed"] = True
             server_spec["path_local"] = str(server_dst)
             self.installed_servers[server_name] = server_spec
 
-            logger.info(f"Successfully installed {server_name}")
+            logger.info(f"Successfully installed '{server_name}'")
             return True
 
-        except subprocess.TimeoutExpired:
-            logger.error(f"Installation timeout for {server_name}")
-            return False
         except Exception as e:
-            logger.error(f"Failed to install {server_name}: {e}")
+            logger.error(f"Failed to install '{server_name}': {e}", exc_info=True)
             return False
 
     async def start_server(self, server_name: str, config: Dict = None) -> bool:
@@ -477,3 +577,52 @@ class MCPDiscovery:
         logger.info("Shutting down all MCP servers...")
         for server_name in list(self.running_servers.keys()):
             await self.stop_server(server_name)
+
+    def search_servers(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Search MCP servers by name, description, tools, or category
+
+        Args:
+            query: Search query string
+
+        Returns:
+            List of matching server specifications
+        """
+        query = query.lower()
+        results = []
+
+        for server in self.available_servers:
+            # Search in name
+            if query in server.get("name", "").lower():
+                results.append(server)
+                continue
+
+            # Search in description
+            if query in server.get("description", "").lower():
+                results.append(server)
+                continue
+
+            # Search in category
+            if query in server.get("category", "").lower():
+                results.append(server)
+                continue
+
+            # Search in tools
+            tools = server.get("tools", [])
+            if any(query in tool.lower() for tool in tools):
+                results.append(server)
+                continue
+
+        return results
+
+    def get_categories(self) -> List[str]:
+        """Get list of all available categories"""
+        categories = set()
+        for server in self.available_servers:
+            if "category" in server:
+                categories.add(server["category"])
+        return sorted(list(categories))
+
+    def get_servers_by_category(self, category: str) -> List[Dict[str, Any]]:
+        """Get all servers in a specific category"""
+        return [s for s in self.available_servers if s.get("category", "").lower() == category.lower()]

@@ -29,19 +29,28 @@ class ProjectBuilder:
         self.model = model
         self.mcp_discovery = mcp_discovery
 
-    async def build_project(self, description: str, console: Console) -> Path:
+    async def build_project(self, description: str, console: Console, output_dir: Optional[str] = None) -> Path:
         """
         Build a complete project from description
 
         Args:
             description: Natural language project description
             console: Rich console for output
+            output_dir: Optional output directory (defaults to ./projects)
 
         Returns:
             Path to created project
         """
-        project_name = self._generate_project_name(description)
-        project_path = Path.cwd() / "projects" / project_name
+        # Determine project path based on output_dir
+        if output_dir:
+            # Use exact directory specified by user (no subdirectory)
+            project_path = Path(output_dir).expanduser().resolve()
+        else:
+            # Auto-generate name with timestamp in ./projects
+            project_name = self._generate_project_name(description)
+            base_dir = Path.cwd() / "projects"
+            project_path = base_dir / project_name
+
         project_path.mkdir(parents=True, exist_ok=True)
 
         with Progress(
@@ -212,28 +221,18 @@ Generate complete, working code."""
         await self._write_file_mcp(file_path, code)
 
     async def _write_file_mcp(self, file_path: Path, content: str):
-        """Write file using MCP filesystem server"""
-        # Ensure filesystem server is running
-        if "filesystem" in self.mcp_discovery.installed_servers:
-            try:
-                result = await self.mcp_discovery.call_tool(
-                    server_name="filesystem",
-                    tool_name="write_file",
-                    arguments={
-                        "path": str(file_path),
-                        "content": content
-                    }
-                )
+        """Write file with robust error handling"""
+        try:
+            # Ensure parent directory exists
+            file_path.parent.mkdir(parents=True, exist_ok=True)
 
-                if "error" in result:
-                    # Fallback to direct write
-                    file_path.write_text(content)
-            except:
-                # Fallback to direct write
-                file_path.write_text(content)
-        else:
-            # Direct write
-            file_path.write_text(content)
+            # Direct write (most reliable method)
+            file_path.write_text(content, encoding='utf-8')
+            logger.info(f"Successfully wrote {file_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to write {file_path}: {e}")
+            raise RuntimeError(f"Could not create file {file_path}: {e}")
 
     async def _init_git(self, project_path: Path):
         """Initialize git repository"""
