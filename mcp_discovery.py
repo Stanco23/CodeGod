@@ -85,9 +85,9 @@ class MCPDiscovery:
                     "git_commit", "git_add", "git_reset", "git_log",
                     "git_clone", "git_checkout", "git_create_branch", "git_merge"
                 ],
-                "install_cmd": "npm install && npm run build",
-                "run_cmd": "node dist/index.js",
-                "language": "typescript"
+                "install_cmd": None,  # Auto-detect (Python project)
+                "run_cmd": "python -m mcp_server_git",
+                "language": "python"
             },
             {
                 "name": "github",
@@ -184,6 +184,46 @@ class MCPDiscovery:
             else:
                 server_spec["installed"] = False
 
+    def _detect_and_get_install_cmd(self, server_path: Path, server_spec: Dict) -> str:
+        """
+        Auto-detect project type and return appropriate install command
+
+        Args:
+            server_path: Path to server directory
+            server_spec: Server specification
+
+        Returns:
+            Install command string
+        """
+        # Check for Python project
+        if (server_path / "pyproject.toml").exists():
+            logger.info(f"Detected Python project (pyproject.toml)")
+            # Try uv first (faster), fall back to pip
+            if subprocess.run(["which", "uv"], capture_output=True).returncode == 0:
+                return "uv pip install -e ."
+            else:
+                return "pip install -e ."
+
+        # Check for Node.js/TypeScript project
+        elif (server_path / "package.json").exists():
+            logger.info(f"Detected Node.js/TypeScript project (package.json)")
+            return "npm install && npm run build"
+
+        # Check for requirements.txt (Python without pyproject.toml)
+        elif (server_path / "requirements.txt").exists():
+            logger.info(f"Detected Python project (requirements.txt)")
+            return "pip install -r requirements.txt"
+
+        # Fall back to spec's install_cmd if provided
+        elif server_spec.get("install_cmd"):
+            logger.info(f"Using spec install command")
+            return server_spec.get("install_cmd")
+
+        # No installation needed
+        else:
+            logger.info(f"No installation command detected")
+            return None
+
     async def install_server(self, server_name: str) -> bool:
         """
         Install an MCP server
@@ -233,8 +273,9 @@ class MCPDiscovery:
                 shutil.rmtree(server_dst)
             shutil.copytree(server_src, server_dst)
 
-            # Install dependencies
-            install_cmd = server_spec.get("install_cmd")
+            # Auto-detect project type and install dependencies
+            install_cmd = self._detect_and_get_install_cmd(server_dst, server_spec)
+
             if install_cmd:
                 logger.info(f"Installing dependencies: {install_cmd}")
                 result = subprocess.run(
