@@ -72,7 +72,10 @@ class CodeGod:
             # Initialize model
             task = progress.add_task("Loading AI model...", total=None)
             try:
-                self.model = get_master_model()
+                self.model = get_master_model(
+                    model_name=self.model_name,
+                    prefer_local=self.prefer_local
+                )
                 progress.update(task, description=f"✓ Model loaded: {self.model.model_name}")
             except Exception as e:
                 self.console.print(f"[red]✗ Failed to load model: {e}[/red]")

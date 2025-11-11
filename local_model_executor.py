@@ -61,21 +61,30 @@ class LocalModelExecutor:
             )
 
             if self.model_name not in result.stdout:
-                logger.info(f"Pulling model {self.model_name} (this may take a while)...")
-                subprocess.run(
-                    ["ollama", "pull", self.model_name],
-                    check=True,
-                    timeout=3600  # 1 hour for large models
+                # Model not found - don't auto-pull, give clear error
+                raise ValueError(
+                    f"Model '{self.model_name}' not found in Ollama.\n\n"
+                    f"Please install it first:\n"
+                    f"  ollama pull {self.model_name}\n\n"
+                    f"Model sizes:\n"
+                    f"  - 1B-3B models: 1-2GB download, 2-4GB RAM\n"
+                    f"  - 7B-8B models: 4-5GB download, 8GB+ RAM\n"
+                    f"  - 70B models: 40GB download, 48GB+ RAM\n\n"
+                    f"Or choose a different model with:\n"
+                    f"  ./codegod --model <model-name>\n\n"
+                    f"Available models: ollama list"
                 )
-                logger.info(f"Model {self.model_name} ready")
             else:
                 logger.info(f"Model {self.model_name} already available")
 
         except FileNotFoundError:
-            logger.error("Ollama not found. Please install from https://ollama.ai/")
+            logger.error("Ollama not found. Please install from https://ollama.com/")
+            raise
+        except ValueError:
+            # Re-raise our custom error
             raise
         except Exception as e:
-            logger.error(f"Failed to ensure model availability: {e}")
+            logger.error(f"Failed to check model availability: {e}")
             raise
 
     def _setup_api_client(self):
@@ -242,13 +251,24 @@ class ModelSelector:
         """
 
         if prefer_local:
-            # Try local models in order of preference
+            # Try local models in order of preference (large to small)
             local_models = [
+                # Large models (70B+)
                 "llama3.1:70b",      # Meta Llama 3.1 70B
                 "qwen2.5:72b",       # Qwen 2.5 72B
-                "mixtral:8x7b",      # Mixtral 8x7B (56B total)
+                "mixtral:8x7b",      # Mixtral 8x7B
+                # Medium models (7B-33B)
                 "deepseek-coder:33b", # DeepSeek Coder 33B
-                "llama3.1:405b",     # Meta Llama 3.1 405B (if you have the GPU!)
+                "llama3.1:8b",       # Llama 3.1 8B
+                "mistral:7b",        # Mistral 7B
+                "qwen2.5:7b",        # Qwen 2.5 7B
+                # Small models (1B-3B)
+                "phi3:mini",         # Phi-3 Mini 3.8B
+                "llama3.2:3b",       # Llama 3.2 3B
+                "qwen2.5:3b",        # Qwen 2.5 3B
+                "gemma2:2b",         # Gemma 2 2B
+                "qwen2.5:1.5b",      # Qwen 2.5 1.5B
+                "llama3.2:1b",       # Llama 3.2 1B
             ]
 
             # Check which models are available
@@ -270,11 +290,18 @@ class ModelSelector:
                             backend=ModelBackend.OLLAMA
                         )
 
-                # No models available, try to pull the smallest acceptable one
-                logger.warning("No suitable local models found. Will attempt to pull llama3.1:70b")
-                return LocalModelExecutor(
-                    model_name="llama3.1:70b",
-                    backend=ModelBackend.OLLAMA
+                # No models available - give helpful error
+                raise ValueError(
+                    "No Ollama models found. Please install a model:\n\n"
+                    "For small/fast (1-4GB RAM):\n"
+                    "  ollama pull qwen2.5:1.5b\n"
+                    "  ollama pull llama3.2:3b\n\n"
+                    "For medium (8GB+ RAM):\n"
+                    "  ollama pull llama3.1:8b\n"
+                    "  ollama pull mistral:7b\n\n"
+                    "For large/best quality (48GB+ RAM):\n"
+                    "  ollama pull llama3.1:70b\n\n"
+                    "Or use API models with --prefer-api"
                 )
 
             except FileNotFoundError:
@@ -305,17 +332,29 @@ class ModelSelector:
         )
 
 
-def get_master_model() -> LocalModelExecutor:
+def get_master_model(model_name: Optional[str] = None, prefer_local: Optional[bool] = None) -> LocalModelExecutor:
     """
     Get Master AI model based on environment configuration
 
     Priority:
-    1. Local models if PREFER_LOCAL=true
-    2. API models if API keys provided
-    3. Error if neither available
+    1. model_name parameter (highest - from --model flag)
+    2. MASTER_MODEL environment variable
+    3. Auto-select best available model
+
+    Args:
+        model_name: Specific model to use (from --model flag)
+        prefer_local: Whether to prefer local models over API
+
+    Returns:
+        Configured LocalModelExecutor
     """
-    prefer_local = os.getenv("PREFER_LOCAL", "true").lower() == "true"
-    master_model = os.getenv("MASTER_MODEL", "auto")
+    # Get prefer_local setting
+    if prefer_local is None:
+        prefer_local = os.getenv("PREFER_LOCAL", "true").lower() == "true"
+
+    # Determine which model to use
+    # Priority: parameter > env var > auto
+    master_model = model_name or os.getenv("MASTER_MODEL", "auto")
 
     # If specific model requested
     if master_model != "auto":
